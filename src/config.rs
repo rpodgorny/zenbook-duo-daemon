@@ -164,7 +164,10 @@ impl Config {
     /// Read config file, returning defaults if it doesn't exist
     pub async fn read(config_path: &PathBuf) -> Config {
         if !fs::try_exists(config_path).await.unwrap_or(false) {
-            info!("Config file not found at {}, using defaults", config_path.display());
+            info!(
+                "Config file not found at {}, using defaults",
+                config_path.display()
+            );
             return Config::default();
         }
         info!("Loading config from: {}", config_path.display());
