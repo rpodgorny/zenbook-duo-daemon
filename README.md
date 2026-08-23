@@ -22,6 +22,7 @@ AI Generated Wiki: [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://dee
 - ✅ Disable keyboard backlight when idle
 - ✅ Brightness sync between primary and secondary display
 - ✅ Remap keys to run custom commands or key combinations
+- ✅ Palm rejection (libinput disable-while-typing) in both wired and Bluetooth mode, see [libinput quirks](#libinput-quirks)
 
 | Keyboard Function               | Wired Mode | Bluetooth Mode | Default Mapping              | Remappable via config file? |
 | ------------------------------- | ---------- | -------------- | ---------------------------- | --------------------------- |
@@ -64,6 +65,31 @@ The install script will:
 2. Create a systemd service file in `/etc/systemd/system/zenbook-duo-daemon.service`
 3. Create a backup of the old config file if it is not compatible with the new config file.
 4. Enable and start the service
+
+## libinput quirks
+
+Palm rejection is libinput's disable-while-typing, and it needs two quirks that libinput
+cannot infer on its own: the keyboard has to be marked internal, and over Bluetooth the
+touchpad also has to be marked as sitting below a keyboard. Marking only the keyboard is
+enough over the pogo pins but does nothing over Bluetooth.
+
+The stanzas are in `local-overrides.quirks`. Merge them into
+`/etc/libinput/local-overrides.quirks` — that file may already hold unrelated quirks of
+your own, so merge rather than overwrite:
+
+```bash
+sudo mkdir -p /etc/libinput
+sudo cat local-overrides.quirks >> /etc/libinput/local-overrides.quirks
+```
+
+Then reconnect the keyboard, or restart your session, and check that they apply:
+
+```bash
+libinput quirks list /dev/input/eventNN
+```
+
+The file itself documents the per-model product ids and how to test a change before
+installing it.
 
 ## Configuration
 

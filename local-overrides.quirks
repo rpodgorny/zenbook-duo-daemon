@@ -1,0 +1,82 @@
+# ASUS Zenbook Duo - libinput quirks for disable-while-typing (palm rejection).
+#
+# Install by merging into /etc/libinput/local-overrides.quirks. That file may already
+# hold unrelated stanzas of your own, so merge rather than overwrite.
+#
+# DWT needs libinput to pair the touchpad with a keyboard, and on this machine those
+# are separate devices, so it takes two halves:
+#
+#   1. the keyboard has to look internal, otherwise libinput treats it as an external
+#      keyboard and never triggers DWT at all
+#   2. over Bluetooth the touchpad also arrives as an external device, and libinput
+#      will not pair an external touchpad with anything until the combo layout tells
+#      it the touchpad sits below a keyboard
+#
+# Setting only the first half is the easy mistake: it is enough over the pogo pins but
+# does nothing over Bluetooth. Both routes are documented in libinput's own
+# /usr/share/libinput/50-system-lenovo.quirks, for the same class of detachable
+# keyboard+touchpad combos.
+#
+# Product ids differ per model, and the Bluetooth id is the wired id plus one:
+#
+#              wired    bluetooth
+#   UX8406MA   0x1B2C   0x1B2D     (2024)
+#   UX8406CA   0x1BF2   0x1BF3     (2025)
+#
+# Check what your machine reports before trusting these:
+#
+#   libinput quirks list /dev/input/eventNN
+#
+# and to try a change without installing it first, copy /usr/share/libinput/*.quirks
+# plus this file into a scratch directory and point libinput at it:
+#
+#   libinput quirks validate --data-dir DIR
+#   libinput quirks list --data-dir DIR /dev/input/eventNN
+#
+# Quirks are read when a device is added, so a change only takes effect once the
+# keyboard reconnects or the session restarts.
+#
+# The 2025 stanzas are verified on hardware. The 2024 ids come from the report in
+# upstream issue #8 and have not been tested here.
+
+[ASUS Zenbook Duo USB Keyboard 2024]
+MatchUdevType=keyboard
+MatchBus=usb
+MatchVendor=0x0B05
+MatchProduct=0x1B2C
+AttrKeyboardIntegration=internal
+
+[ASUS Zenbook Duo USB Keyboard 2025]
+MatchUdevType=keyboard
+MatchBus=usb
+MatchVendor=0x0B05
+MatchProduct=0x1BF2
+AttrKeyboardIntegration=internal
+
+[ASUS Zenbook Duo Bluetooth Keyboard 2024]
+MatchUdevType=keyboard
+MatchBus=bluetooth
+MatchVendor=0x0B05
+MatchProduct=0x1B2D
+AttrKeyboardIntegration=internal
+
+[ASUS Zenbook Duo Bluetooth Keyboard 2025]
+MatchUdevType=keyboard
+MatchBus=bluetooth
+MatchVendor=0x0B05
+MatchProduct=0x1BF3
+AttrKeyboardIntegration=internal
+
+[ASUS Zenbook Duo Bluetooth Touchpad Combo 2024]
+MatchUdevType=touchpad
+MatchBus=bluetooth
+MatchVendor=0x0B05
+MatchProduct=0x1B2D
+AttrTPKComboLayout=below
+
+[ASUS Zenbook Duo Bluetooth Touchpad Combo 2025]
+MatchUdevType=touchpad
+MatchBus=bluetooth
+MatchVendor=0x0B05
+MatchProduct=0x1BF3
+AttrTPKComboLayout=below
