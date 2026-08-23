@@ -99,7 +99,7 @@ Available commands:
 
 Notes:
 
-1. The `suspend_start` and `suspend_end` commands are sent automatically by the systemd services `zenbook-duo-daemon-pre-sleep` and `zenbook-duo-daemon-post-sleep` to disable keyboard backlight during suspend.
+1. The daemon triggers `suspend_start` and `suspend_end` itself, from logind's `PrepareForSleep` signal, to disable the keyboard backlight during suspend. It holds a `delay` sleep inhibitor so the LEDs are actually turned off before the machine suspends. The commands remain available on the pipe for manual use. Older versions used the `zenbook-duo-daemon-pre-sleep` and `zenbook-duo-daemon-post-sleep` systemd units instead; `install.sh` removes them.
 2. The secondary display commands are no-op when the keyboard is attached.
 
 ## Development

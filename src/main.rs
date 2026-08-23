@@ -13,6 +13,7 @@ use crate::{
     idle_detection::start_idle_detection_task,
     keyboard_usb::{find_wired_keyboard, start_usb_keyboard_monitor_task, start_usb_keyboard_task},
     secondary_display::start_secondary_display_task,
+    sleep_monitor::start_sleep_monitor_task,
     state::{KeyboardBacklightState, KeyboardStateManager},
     unix_pipe::start_receive_commands_task,
     virtual_keyboard::VirtualKeyboard,
@@ -45,6 +46,7 @@ mod keyboard_bt;
 mod keyboard_usb;
 mod mute_state;
 mod secondary_display;
+mod sleep_monitor;
 mod state;
 mod unix_pipe;
 mod virtual_keyboard;
@@ -158,6 +160,8 @@ async fn run_daemon(config_path: PathBuf) {
     start_listen_mute_state_thread(state_manager.clone());
 
     start_receive_commands_task(&config, state_manager.clone(), activity_notifier.clone());
+
+    start_sleep_monitor_task(state_manager.clone(), activity_notifier.clone());
 
     panic::set_hook(Box::new(|info| {
         error!("Thread panicked: {info}");

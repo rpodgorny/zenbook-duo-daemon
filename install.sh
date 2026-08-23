@@ -36,6 +36,8 @@ uninstall() {
         systemctl disable "${SERVICE_NAME}" || true
     fi
     
+    # Legacy pre/post-sleep units: the daemon now handles suspend itself via
+    # logind's PrepareForSleep signal, but old installs still have these.
     # Stop and disable pre-sleep service if it exists
     if systemctl is-active --quiet "${PRE_SLEEP_SERVICE_NAME}" 2>/dev/null; then
         echo "Stopping pre-sleep service..."
@@ -124,32 +126,6 @@ install() {
         exit 1
     fi
     
-    # Download pre-sleep service file
-    echo "Downloading pre-sleep service file from ${GITHUB_REPO}/zenbook-duo-daemon-pre-sleep.service..."
-    if ! curl -fSL -o "${PRE_SLEEP_SERVICE_FILE}" "${GITHUB_REPO}/zenbook-duo-daemon-pre-sleep.service"; then
-        echo "Error: Failed to download pre-sleep service file" >&2
-        rm -f "${BINARY_PATH}" "${SERVICE_FILE}"
-        exit 1
-    fi
-    if [ ! -s "${PRE_SLEEP_SERVICE_FILE}" ]; then
-        echo "Error: Downloaded pre-sleep service file is empty" >&2
-        rm -f "${BINARY_PATH}" "${SERVICE_FILE}" "${PRE_SLEEP_SERVICE_FILE}"
-        exit 1
-    fi
-    
-    # Download post-sleep service file
-    echo "Downloading post-sleep service file from ${GITHUB_REPO}/zenbook-duo-daemon-post-sleep.service..."
-    if ! curl -fSL -o "${POST_SLEEP_SERVICE_FILE}" "${GITHUB_REPO}/zenbook-duo-daemon-post-sleep.service"; then
-        echo "Error: Failed to download post-sleep service file" >&2
-        rm -f "${BINARY_PATH}" "${SERVICE_FILE}" "${PRE_SLEEP_SERVICE_FILE}"
-        exit 1
-    fi
-    if [ ! -s "${POST_SLEEP_SERVICE_FILE}" ]; then
-        echo "Error: Downloaded post-sleep service file is empty" >&2
-        rm -f "${BINARY_PATH}" "${SERVICE_FILE}" "${PRE_SLEEP_SERVICE_FILE}" "${POST_SLEEP_SERVICE_FILE}"
-        exit 1
-    fi
-    
     # Run migrate-config command
     echo "Running config migration..."
     "${BINARY_PATH}" migrate-config || {
@@ -162,8 +138,6 @@ install() {
     
     echo "Enabling services..."
     systemctl enable "${SERVICE_NAME}"
-    systemctl enable "${PRE_SLEEP_SERVICE_NAME}"
-    systemctl enable "${POST_SLEEP_SERVICE_NAME}"
     
     echo "Starting main service..."
     systemctl start "${SERVICE_NAME}"
@@ -185,8 +159,6 @@ local_install() {
     local binary_path="$1"
     
     local service_file_path="${SCRIPT_DIR}/zenbook-duo-daemon.service"
-    local pre_sleep_service_file_path="${SCRIPT_DIR}/zenbook-duo-daemon-pre-sleep.service"
-    local post_sleep_service_file_path="${SCRIPT_DIR}/zenbook-duo-daemon-post-sleep.service"
     
     if [ ! -f "${binary_path}" ]; then
         echo "Error: Binary file not found: ${binary_path}" >&2
@@ -195,16 +167,6 @@ local_install() {
     
     if [ ! -f "${service_file_path}" ]; then
         echo "Error: Service file not found: ${service_file_path}" >&2
-        exit 1
-    fi
-    
-    if [ ! -f "${pre_sleep_service_file_path}" ]; then
-        echo "Error: Pre-sleep service file not found: ${pre_sleep_service_file_path}" >&2
-        exit 1
-    fi
-    
-    if [ ! -f "${post_sleep_service_file_path}" ]; then
-        echo "Error: Post-sleep service file not found: ${post_sleep_service_file_path}" >&2
         exit 1
     fi
     
@@ -227,12 +189,6 @@ local_install() {
     echo "Copying service file from ${service_file_path}..."
     cp "${service_file_path}" "${SERVICE_FILE}"
     
-    echo "Copying pre-sleep service file from ${pre_sleep_service_file_path}..."
-    cp "${pre_sleep_service_file_path}" "${PRE_SLEEP_SERVICE_FILE}"
-    
-    echo "Copying post-sleep service file from ${post_sleep_service_file_path}..."
-    cp "${post_sleep_service_file_path}" "${POST_SLEEP_SERVICE_FILE}"
-    
     # Run migrate-config command
     echo "Running config migration..."
     "${BINARY_PATH}" migrate-config || {
@@ -245,8 +201,6 @@ local_install() {
     
     echo "Enabling services..."
     systemctl enable "${SERVICE_NAME}"
-    systemctl enable "${PRE_SLEEP_SERVICE_NAME}"
-    systemctl enable "${POST_SLEEP_SERVICE_NAME}"
     
     echo "Starting main service..."
     systemctl start "${SERVICE_NAME}"
