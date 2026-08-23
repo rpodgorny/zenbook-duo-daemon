@@ -4,7 +4,7 @@ use std::{path::PathBuf, process, sync::Arc};
 
 use tokio::fs;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::mute_state::start_listen_mute_state_thread;
 use crate::{
@@ -13,6 +13,7 @@ use crate::{
     idle_detection::start_idle_detection_task,
     keyboard_usb::{find_wired_keyboard, start_usb_keyboard_monitor_task, start_usb_keyboard_task},
     secondary_display::start_secondary_display_task,
+    sleep_monitor::start_sleep_monitor_task,
     state::{KeyboardBacklightState, KeyboardStateManager},
     unix_pipe::start_receive_commands_task,
     virtual_keyboard::VirtualKeyboard,
@@ -36,15 +37,23 @@ enum Args {
         #[arg(short, long)]
         config_path: Option<PathBuf>,
     },
+    /// Create default config file
+    CreateConfig {
+        /// Path to the config file, defaults to /etc/zenbook-duo-daemon/config.toml
+        #[arg(short, long)]
+        config_path: Option<PathBuf>,
+    },
 }
 
 mod config;
 mod events;
+mod hidraw;
 mod idle_detection;
 mod keyboard_bt;
 mod keyboard_usb;
 mod mute_state;
 mod secondary_display;
+mod sleep_monitor;
 mod state;
 mod unix_pipe;
 mod virtual_keyboard;
@@ -58,6 +67,12 @@ async fn main() {
     match args {
         Args::MigrateConfig { config_path } => {
             migrate_config(config_path.unwrap_or(PathBuf::from(DEFAULT_CONFIG_PATH))).await;
+            return;
+        }
+        Args::CreateConfig { config_path } => {
+            let config_path = config_path.unwrap_or(PathBuf::from(DEFAULT_CONFIG_PATH));
+            Config::write_default_config(&config_path).await;
+            info!("Created default config file at: {}", config_path.display());
             return;
         }
         Args::Run { config_path } => {
@@ -123,7 +138,7 @@ async fn run_daemon(config_path: PathBuf) {
                 activity_notifier.clone(),
             )
             .await;
-            (state_manager, activity_notifier, Some(current_usb_keyboard))
+            (state_manager, activity_notifier, current_usb_keyboard)
         } else {
             let state_manager = KeyboardStateManager::new(false, event_sender.clone());
             let activity_notifier = start_idle_detection_task(&config, state_manager.clone());
@@ -146,6 +161,9 @@ async fn run_daemon(config_path: PathBuf) {
         activity_notifier.clone(),
     );
 
+    // Resume has to re-open the wired keyboard, see reopen_wired_keyboard.
+    let (reconnect_tx, reconnect_rx) = mpsc::channel::<()>(1);
+
     start_usb_keyboard_monitor_task(
         &config,
         current_usb_keyboard,
@@ -153,11 +171,18 @@ async fn run_daemon(config_path: PathBuf) {
         virtual_keyboard.clone(),
         state_manager.clone(),
         activity_notifier.clone(),
+        reconnect_rx,
     );
 
     start_listen_mute_state_thread(state_manager.clone());
 
     start_receive_commands_task(&config, state_manager.clone(), activity_notifier.clone());
+
+    start_sleep_monitor_task(
+        state_manager.clone(),
+        activity_notifier.clone(),
+        reconnect_tx,
+    );
 
     panic::set_hook(Box::new(|info| {
         error!("Thread panicked: {info}");

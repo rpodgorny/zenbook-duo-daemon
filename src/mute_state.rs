@@ -1,6 +1,11 @@
 use std::{
-    ffi::CString, fs, io::BufReader, os::unix::net::UnixStream, path::PathBuf, thread,
-    time::Duration,
+    ffi::CString,
+    fs,
+    io::BufReader,
+    os::unix::net::UnixStream,
+    path::PathBuf,
+    thread,
+    time::{Duration, Instant},
 };
 
 use log::{info, warn};
@@ -9,18 +14,47 @@ use users::{get_user_by_uid, os::unix::UserExt as _};
 
 use crate::state::KeyboardStateManager;
 
+/// A pulseaudio server with no default source - no microphone, or pipewire fell back to
+/// auto_null - fails immediately and forever, so retrying at a fixed 1s interval buries
+/// the journal. Back off instead, and reset once a connection has actually lasted.
+const RETRY_MIN: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(60);
+const RETRY_RESET_AFTER: Duration = Duration::from_secs(10);
+
 pub fn start_listen_mute_state_thread(state_manager: KeyboardStateManager) {
     thread::spawn(move || {
+        let mut retry_in = RETRY_MIN;
+        let mut last_socket_path = None;
+        let mut last_error = None;
+
         loop {
             if let Some((uid, pa_socket_path)) = find_pulseaudio_socket_path() {
-                info!("Found pulseaudio socket path: {:?}", pa_socket_path);
+                if last_socket_path.as_ref() != Some(&pa_socket_path) {
+                    info!("Found pulseaudio socket path: {:?}", pa_socket_path);
+                    last_socket_path = Some(pa_socket_path.clone());
+                }
+
+                let started = Instant::now();
                 if let Err(e) = listen_mute_state(pa_socket_path, uid, state_manager.clone()) {
-                    warn!("Error listening to mute state: {:?}", e);
+                    // Repeats are the norm here, so only report a change of error.
+                    let error = format!("{:?}", e);
+                    if last_error.as_deref() != Some(error.as_str()) {
+                        warn!("Error listening to mute state: {} (retrying)", error);
+                        last_error = Some(error);
+                    }
+                } else {
+                    last_error = None;
+                }
+
+                if started.elapsed() >= RETRY_RESET_AFTER {
+                    retry_in = RETRY_MIN;
                 }
 
                 state_manager.set_mic_mute_led(false);
             }
-            thread::sleep(Duration::from_secs(1));
+
+            thread::sleep(retry_in);
+            retry_in = (retry_in * 2).min(RETRY_MAX);
         }
     });
 }

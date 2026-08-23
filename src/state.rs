@@ -2,7 +2,7 @@ use crate::events::Event;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyboardBacklightState {
     Off,
     Low,
@@ -97,6 +97,12 @@ impl KeyboardStateManager {
 
     pub fn set_mic_mute_led(&self, enabled: bool) {
         let mut state = self.state.write().unwrap();
+        // Callers poll and re-assert the same value, so only emit on a real change.
+        // Reconnecting devices push the current state directly instead of going
+        // through here, so nothing depends on a redundant event.
+        if state.mic_mute_led == enabled {
+            return;
+        }
         state.mic_mute_led = enabled;
         if !state.is_suspended {
             self.sender.send(Event::MicMuteLed(enabled)).ok();
@@ -122,6 +128,9 @@ impl KeyboardStateManager {
 
     pub fn set_keyboard_backlight(&self, new_state: KeyboardBacklightState) {
         let mut state = self.state.write().unwrap();
+        if state.backlight == new_state {
+            return;
+        }
         state.backlight = new_state;
         if !state.is_idle && !state.is_suspended {
             self.sender.send(Event::Backlight(new_state)).ok();
@@ -189,5 +198,65 @@ impl KeyboardStateManager {
     pub fn is_secondary_display_enabled(&self) -> bool {
         let state = self.state.read().unwrap();
         state.is_secondary_display_enabled
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drain<F: Fn(&Event) -> bool>(rx: &mut broadcast::Receiver<Event>, want: F) -> usize {
+        let mut n = 0;
+        while let Ok(event) = rx.try_recv() {
+            if want(&event) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// The mute-state poller re-asserts the same value on every retry. Without change
+    /// detection each retry became a real write to the keyboard, once a second forever.
+    #[test]
+    fn repeating_a_mic_mute_value_emits_once() {
+        let (sender, mut rx) = broadcast::channel(64);
+        let state = KeyboardStateManager::new(false, sender);
+
+        state.set_mic_mute_led(true);
+        state.set_mic_mute_led(true);
+        state.set_mic_mute_led(true);
+        assert_eq!(
+            drain(&mut rx, |e| matches!(e, Event::MicMuteLed(_))),
+            1,
+            "repeated sets of the same value must not re-emit"
+        );
+
+        state.set_mic_mute_led(false);
+        assert_eq!(
+            drain(&mut rx, |e| matches!(e, Event::MicMuteLed(_))),
+            1,
+            "an actual change must still emit"
+        );
+    }
+
+    #[test]
+    fn repeating_a_backlight_value_emits_once() {
+        let (sender, mut rx) = broadcast::channel(64);
+        let state = KeyboardStateManager::new(false, sender);
+
+        state.set_keyboard_backlight(KeyboardBacklightState::High);
+        state.set_keyboard_backlight(KeyboardBacklightState::High);
+        assert_eq!(
+            drain(&mut rx, |e| matches!(e, Event::Backlight(_))),
+            1,
+            "repeated sets of the same value must not re-emit"
+        );
+
+        state.set_keyboard_backlight(KeyboardBacklightState::Low);
+        assert_eq!(
+            drain(&mut rx, |e| matches!(e, Event::Backlight(_))),
+            1,
+            "an actual change must still emit"
+        );
     }
 }

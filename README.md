@@ -22,6 +22,7 @@ AI Generated Wiki: [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://dee
 - ✅ Disable keyboard backlight when idle
 - ✅ Brightness sync between primary and secondary display
 - ✅ Remap keys to run custom commands or key combinations
+- ✅ Palm rejection (libinput disable-while-typing) in Bluetooth mode, see [libinput quirks](#libinput-quirks)
 
 | Keyboard Function               | Wired Mode | Bluetooth Mode | Default Mapping              | Remappable via config file? |
 | ------------------------------- | ---------- | -------------- | ---------------------------- | --------------------------- |
@@ -29,20 +30,20 @@ AI Generated Wiki: [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://dee
 | Volume Down Key                 | ✅         | ✅             | `KEY_VOLUMEDOWN`             | ❌                          |
 | Volume Up Key                   | ✅         | ✅             | `KEY_VOLUMEUP`               | ❌                          |
 | Keyboard Backlight Key          | ✅         | ✅             | `KEY_BACKLIGHT`              | ✅                          |
-| Keyboard Backlight Control      | ✅         | ❌ (1)         | N/A                          | ✅                          |
+| Keyboard Backlight Control      | ✅         | ✅             | N/A                          | ✅                          |
 | Brightness Down Key             | ✅         | ✅             | `KEY_BRIGHTNESSDOWN`         | ✅                          |
 | Brightness Up Key               | ✅         | ✅             | `KEY_BRIGHTNESSUP`           | ✅                          |
 | Extended Display Mode Key       | ✅         | ✅             | `KEY_LEFT_META + KEY_P`      | ❌                          |
 | Swap Up Down Display Key        | ✅         | ✅             | None                         | ✅                          |
 | Microphone Mute Key             | ✅         | ✅             | `KEY_MICMUTE`                | ✅                          |
-| Microphone Mute Key LED Control | ✅         | ❌ (2)         | N/A                          | ✅                          |
+| Microphone Mute Key LED Control | ✅         | ✅             | N/A                          | ✅                          |
 | Emoji Picker Key                | ✅         | ✅             | `KEY_LEFTCTRL + KEY_DOT` (3) | ✅                          |
 | MyASUS Key                      | ✅         | ✅             | None                         | ✅                          |
 | Toggle Secondary Display Key    | ✅         | ✅             | Toggle Secondary Display     | ✅                          |
 | Fn + Function Keys              | ✅         | ✅             | F1 - F12                     | ❌                          |
 
-1. Should be possible, the packet capture file under windows is at `pcap/bt_change_backlight.pcapng`
-2. Should be possible, the packet capture file under windows is at `pcap/bt_micmute_led.pcapng`
+1. Sent as the wired vendor feature report over the Bluetooth hidraw node, see `src/hidraw.rs`
+2. Sent the same way as the backlight, see `src/hidraw.rs`
 3. This key combination only works for GTK apps in GNOME.
 
 ## Installation
@@ -64,6 +65,36 @@ The install script will:
 2. Create a systemd service file in `/etc/systemd/system/zenbook-duo-daemon.service`
 3. Create a backup of the old config file if it is not compatible with the new config file.
 4. Enable and start the service
+
+## libinput quirks
+
+Palm rejection is libinput's disable-while-typing. Detached, the keyboard and the
+touchpad both enumerate as external Bluetooth devices, and libinput will not pair an
+external touchpad with a keyboard for DWT until the combo layout says the touchpad sits
+below a keyboard. So DWT is unavailable for as long as the keyboard is off the dock.
+
+One stanza fixes it, on the touchpad rather than the keyboard. It is in
+`local-overrides.quirks`. Merge it into `/etc/libinput/local-overrides.quirks` — that
+file may already hold unrelated quirks of your own, so merge rather than overwrite:
+
+```bash
+sudo mkdir -p /etc/libinput
+sudo cat local-overrides.quirks >> /etc/libinput/local-overrides.quirks
+```
+
+Then reconnect the keyboard, or restart your session, and check that it took:
+
+```bash
+libinput list-devices | grep -A8 Touchpad
+```
+
+`Disable-w-typing` should read `enabled` rather than `n/a`.
+
+Your compositor also has to turn DWT on. niri, for one, needs `dwt` inside its
+`input { touchpad { ... } }` block, and omitting it means off.
+
+The file itself documents the per-model product ids and how to test a change before
+installing it.
 
 ## Configuration
 
@@ -99,7 +130,7 @@ Available commands:
 
 Notes:
 
-1. The `suspend_start` and `suspend_end` commands are sent automatically by the systemd services `zenbook-duo-daemon-pre-sleep` and `zenbook-duo-daemon-post-sleep` to disable keyboard backlight during suspend.
+1. The daemon triggers `suspend_start` and `suspend_end` itself, from logind's `PrepareForSleep` signal, to disable the keyboard backlight during suspend. It holds a `delay` sleep inhibitor so the LEDs are actually turned off before the machine suspends. The commands remain available on the pipe for manual use. Older versions used the `zenbook-duo-daemon-pre-sleep` and `zenbook-duo-daemon-post-sleep` systemd units instead; `install.sh` removes them.
 2. The secondary display commands are no-op when the keyboard is attached.
 
 ## Development
