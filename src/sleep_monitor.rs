@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use log::{info, warn};
+use tokio::sync::mpsc;
 use zbus::zvariant::OwnedFd;
 use zbus::{Connection, proxy};
 
@@ -51,6 +52,7 @@ async fn take_delay_lock(manager: &LogindManagerProxy<'_>) -> Option<OwnedFd> {
 pub fn start_sleep_monitor_task(
     state_manager: KeyboardStateManager,
     activity_notifier: ActivityNotifier,
+    reconnect_tx: mpsc::Sender<()>,
 ) {
     tokio::spawn(async move {
         let connection = match Connection::system().await {
@@ -102,6 +104,8 @@ pub fn start_sleep_monitor_task(
                 info!("Resumed");
                 state_manager.suspend_end();
                 activity_notifier.notify();
+                // The kernel dropped our usbfs interface claim while we were out.
+                reconnect_tx.send(()).await.ok();
                 lock = take_delay_lock(&manager).await; // the fd is one-shot, re-arm it
             }
         }

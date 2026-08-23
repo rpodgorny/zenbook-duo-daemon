@@ -7,12 +7,26 @@ use nusb::{
     hotplug::HotplugEvent,
     transfer::{ControlOut, ControlType, In, Interrupt, Recipient},
 };
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::{
     KeyboardBacklightState, config::Config, events::Event, idle_detection::ActivityNotifier,
     parse_hex_string, state::KeyboardStateManager, virtual_keyboard::VirtualKeyboard,
 };
+
+/// Why a wired keyboard task is being shut down.
+#[derive(Debug, Clone, Copy)]
+pub enum Shutdown {
+    /// The device is gone, report the keyboard as detached.
+    Detached,
+    /// The device is still there and is about to be re-opened, keep the attached state.
+    Reopening,
+}
+
+/// The device is not usable again the instant logind says we resumed, and the old
+/// task needs a moment to drop its interface claim first.
+const REOPEN_ATTEMPTS: usize = 10;
+const REOPEN_RETRY_DELAY: Duration = Duration::from_millis(200);
 
 pub async fn find_wired_keyboard(config: &Config) -> Option<DeviceInfo> {
     nusb::list_devices()
@@ -24,46 +38,107 @@ pub async fn find_wired_keyboard(config: &Config) -> Option<DeviceInfo> {
 /// Monitor USB keyboard hotplug events and start wired_keyboard_task when keyboard connects
 pub fn start_usb_keyboard_monitor_task(
     config: &Config,
-    mut current_keyboard: Option<(DeviceId, broadcast::Sender<()>)>,
+    mut current_keyboard: Option<(DeviceId, broadcast::Sender<Shutdown>)>,
     event_sender: broadcast::Sender<Event>,
     virtual_keyboard: Arc<Mutex<VirtualKeyboard>>,
     state_manager: KeyboardStateManager,
     activity_notifier: ActivityNotifier,
+    mut reconnect_rx: mpsc::Receiver<()>,
 ) {
     let config = config.clone();
     tokio::spawn(async move {
         let mut watch = nusb::watch_devices().unwrap();
 
-        while let Some(event) = watch.next().await {
-            match event {
-                HotplugEvent::Connected(device)
-                    if device.vendor_id() == config.vendor_id()
-                        && device.product_id() == config.product_id() =>
-                {
-                    current_keyboard = Some(
-                        start_usb_keyboard_task(
-                            &config,
-                            device,
-                            event_sender.subscribe(),
-                            virtual_keyboard.clone(),
-                            state_manager.clone(),
-                            activity_notifier.clone(),
-                        )
-                        .await,
-                    );
-                }
-                HotplugEvent::Disconnected(device_id) => {
-                    if let Some((id, shutdown_tx)) = &current_keyboard
-                        && id == &device_id
-                    {
-                        shutdown_tx.send(()).ok();
-                        current_keyboard = None;
+        loop {
+            tokio::select! {
+                event = watch.next() => {
+                    match event {
+                        Some(HotplugEvent::Connected(device))
+                            if device.vendor_id() == config.vendor_id()
+                                && device.product_id() == config.product_id() =>
+                        {
+                            current_keyboard = start_usb_keyboard_task(
+                                &config,
+                                device,
+                                event_sender.subscribe(),
+                                virtual_keyboard.clone(),
+                                state_manager.clone(),
+                                activity_notifier.clone(),
+                            )
+                            .await;
+                        }
+                        Some(HotplugEvent::Disconnected(device_id)) => {
+                            if let Some((id, shutdown_tx)) = &current_keyboard
+                                && id == &device_id
+                            {
+                                shutdown_tx.send(Shutdown::Detached).ok();
+                                current_keyboard = None;
+                            }
+                        }
+                        Some(_) => {}
+                        None => break,
                     }
                 }
-                _ => {}
+                request = reconnect_rx.recv() => {
+                    if request.is_none() {
+                        break;
+                    }
+                    current_keyboard = reopen_wired_keyboard(
+                        &config,
+                        current_keyboard.take(),
+                        &event_sender,
+                        &virtual_keyboard,
+                        &state_manager,
+                        &activity_notifier,
+                    )
+                    .await;
+                }
             }
         }
     });
+}
+
+/// Tear down the current wired keyboard task and open the device again.
+///
+/// The kernel drops our usbfs claim on interface 4 across suspend without emitting any
+/// hotplug event, so nothing re-opens the device and every transfer afterwards fails
+/// with EBUSY ("usbfs: did not claim interface 4 before use"). This does in software
+/// what physically detaching and re-attaching the keyboard does.
+async fn reopen_wired_keyboard(
+    config: &Config,
+    current_keyboard: Option<(DeviceId, broadcast::Sender<Shutdown>)>,
+    event_sender: &broadcast::Sender<Event>,
+    virtual_keyboard: &Arc<Mutex<VirtualKeyboard>>,
+    state_manager: &KeyboardStateManager,
+    activity_notifier: &ActivityNotifier,
+) -> Option<(DeviceId, broadcast::Sender<Shutdown>)> {
+    // Nothing was open. A keyboard attached during suspend arrives via hotplug instead.
+    let (_, shutdown_tx) = current_keyboard?;
+    shutdown_tx.send(Shutdown::Reopening).ok();
+
+    for _ in 0..REOPEN_ATTEMPTS {
+        tokio::time::sleep(REOPEN_RETRY_DELAY).await;
+
+        let Some(keyboard) = find_wired_keyboard(config).await else {
+            continue;
+        };
+        let keyboard = start_usb_keyboard_task(
+            config,
+            keyboard,
+            event_sender.subscribe(),
+            virtual_keyboard.clone(),
+            state_manager.clone(),
+            activity_notifier.clone(),
+        )
+        .await;
+        if keyboard.is_some() {
+            info!("Re-opened wired keyboard after resume");
+            return keyboard;
+        }
+    }
+
+    warn!("Wired keyboard did not come back after resume");
+    None
 }
 
 pub async fn start_usb_keyboard_task(
@@ -73,17 +148,37 @@ pub async fn start_usb_keyboard_task(
     virtual_keyboard: Arc<Mutex<VirtualKeyboard>>,
     state_manager: KeyboardStateManager,
     activity_notifier: ActivityNotifier,
-) -> (DeviceId, broadcast::Sender<()>) {
-    let (shutdown_tx, mut shutdown_rx1) = broadcast::channel::<()>(1);
+) -> Option<(DeviceId, broadcast::Sender<Shutdown>)> {
+    let (shutdown_tx, mut shutdown_rx1) = broadcast::channel::<Shutdown>(1);
     let device_id = keyboard.id();
 
-    let keyboard_device = Arc::new(keyboard.open().await.unwrap());
+    // Opening and claiming can fail on a device that is enumerated but not ready yet,
+    // which is the normal state for a second or so after resume.
+    let keyboard_device = match keyboard.open().await {
+        Ok(device) => Arc::new(device),
+        Err(e) => {
+            warn!("Failed to open USB keyboard: {}", e);
+            return None;
+        }
+    };
+    let interface_4 = match keyboard_device.detach_and_claim_interface(4).await {
+        Ok(interface) => interface,
+        Err(e) => {
+            warn!("Failed to claim USB keyboard interface 4: {}", e);
+            return None;
+        }
+    };
+    let mut endpoint_5 = match interface_4.endpoint::<Interrupt, In>(0x85) {
+        Ok(endpoint) => endpoint,
+        Err(e) => {
+            warn!("Failed to open USB keyboard endpoint 0x85: {}", e);
+            return None;
+        }
+    };
+
     state_manager.set_usb_keyboard_attached(true);
     activity_notifier.notify();
     info!("USB connected");
-
-    let interface_4 = keyboard_device.detach_and_claim_interface(4).await.unwrap();
-    let mut endpoint_5 = interface_4.endpoint::<Interrupt, In>(0x85).unwrap();
 
     // enable fn keys
     keyboard_device
@@ -103,7 +198,8 @@ pub async fn start_usb_keyboard_task(
             Duration::from_millis(100),
         )
         .await
-        .unwrap();
+        .inspect_err(|e| warn!("Failed to enable fn keys: {}", e))
+        .ok();
 
     // Restore backlight state
     let backlight_state = state_manager.get_keyboard_backlight();
@@ -157,9 +253,13 @@ pub async fn start_usb_keyboard_task(
             }
 
             tokio::select! {
-                _ = shutdown_rx2.recv() => {
+                reason = shutdown_rx2.recv() => {
                     info!("USB receive task shutting down");
-                    state_manager.set_usb_keyboard_attached(false);
+                    // Re-opening keeps the keyboard attached, so don't flip the
+                    // secondary display on and straight back off again.
+                    if !matches!(reason, Ok(Shutdown::Reopening)) {
+                        state_manager.set_usb_keyboard_attached(false);
+                    }
                     virtual_keyboard.lock().await.release_all_keys();
                     break;
                 }
@@ -183,7 +283,7 @@ pub async fn start_usb_keyboard_task(
         }
     });
 
-    (device_id, shutdown_tx)
+    Some((device_id, shutdown_tx))
 }
 
 async fn parse_keyboard_data(

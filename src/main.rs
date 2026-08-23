@@ -4,7 +4,7 @@ use std::{path::PathBuf, process, sync::Arc};
 
 use tokio::fs;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::mute_state::start_listen_mute_state_thread;
 use crate::{
@@ -125,7 +125,7 @@ async fn run_daemon(config_path: PathBuf) {
                 activity_notifier.clone(),
             )
             .await;
-            (state_manager, activity_notifier, Some(current_usb_keyboard))
+            (state_manager, activity_notifier, current_usb_keyboard)
         } else {
             let state_manager = KeyboardStateManager::new(false, event_sender.clone());
             let activity_notifier = start_idle_detection_task(&config, state_manager.clone());
@@ -148,6 +148,9 @@ async fn run_daemon(config_path: PathBuf) {
         activity_notifier.clone(),
     );
 
+    // Resume has to re-open the wired keyboard, see reopen_wired_keyboard.
+    let (reconnect_tx, reconnect_rx) = mpsc::channel::<()>(1);
+
     start_usb_keyboard_monitor_task(
         &config,
         current_usb_keyboard,
@@ -155,13 +158,18 @@ async fn run_daemon(config_path: PathBuf) {
         virtual_keyboard.clone(),
         state_manager.clone(),
         activity_notifier.clone(),
+        reconnect_rx,
     );
 
     start_listen_mute_state_thread(state_manager.clone());
 
     start_receive_commands_task(&config, state_manager.clone(), activity_notifier.clone());
 
-    start_sleep_monitor_task(state_manager.clone(), activity_notifier.clone());
+    start_sleep_monitor_task(
+        state_manager.clone(),
+        activity_notifier.clone(),
+        reconnect_tx,
+    );
 
     panic::set_hook(Box::new(|info| {
         error!("Thread panicked: {info}");
