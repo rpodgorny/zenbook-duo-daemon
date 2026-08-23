@@ -1,71 +1,51 @@
-# ASUS Zenbook Duo - libinput quirks for disable-while-typing (palm rejection).
+# ASUS Zenbook Duo - libinput quirk for palm rejection (disable-while-typing).
 #
 # Install by merging into /etc/libinput/local-overrides.quirks. That file may already
 # hold unrelated stanzas of your own, so merge rather than overwrite.
 #
-# DWT needs libinput to pair the touchpad with a keyboard, and on this machine those
-# are separate devices, so it takes two halves:
+# Detached, the keyboard and the touchpad both enumerate as external Bluetooth devices.
+# libinput will not pair an external touchpad with a keyboard for DWT until the combo
+# layout says the touchpad sits below a keyboard, so DWT stays unavailable for as long
+# as the keyboard is off the dock.
 #
-#   1. the keyboard has to look internal, otherwise libinput treats it as an external
-#      keyboard and never triggers DWT at all
-#   2. over Bluetooth the touchpad also arrives as an external device, and libinput
-#      will not pair an external touchpad with anything until the combo layout tells
-#      it the touchpad sits below a keyboard
+# Note this is the touchpad attribute, not AttrKeyboardIntegration=internal on the
+# keyboard. The keyboard one is what the ROG entries in libinput's own
+# 50-system-asus.quirks use, but it does nothing here: on those machines the touchpad is
+# internal and the keyboard has a different vid/pid, whereas on the Duo both halves are
+# external and share one vid/pid, so marking the touchpad as a combo is enough on its
+# own. Measured by isolating each stanza with LIBINPUT_QUIRKS_DIR and reading
+# `Disable-w-typing` out of `libinput list-devices`:
 #
-# Setting only the first half is the easy mistake: it is enough over the pogo pins but
-# does nothing over Bluetooth. Both routes are documented in libinput's own
-# /usr/share/libinput/50-system-lenovo.quirks, for the same class of detachable
-# keyboard+touchpad combos.
+#   stock only ......................................... n/a
+#   AttrKeyboardIntegration=internal on the keyboard .... n/a
+#   AttrTPKComboLayout=below on the touchpad ........... enabled
 #
-# Product ids differ per model, and the Bluetooth id is the wired id plus one:
+# Bluetooth product ids differ per model, and are the docked id plus one:
 #
-#              wired    bluetooth
+#              docked   bluetooth
 #   UX8406MA   0x1B2C   0x1B2D     (2024)
 #   UX8406CA   0x1BF2   0x1BF3     (2025)
 #
 # Check what your machine reports before trusting these:
 #
+#   libinput list-devices | grep -A8 Touchpad
 #   libinput quirks list /dev/input/eventNN
 #
-# and to try a change without installing it first, copy /usr/share/libinput/*.quirks
-# plus this file into a scratch directory and point libinput at it:
+# and to try a change without installing it, copy /usr/share/libinput/*.quirks plus this
+# file into a scratch directory and point libinput at it:
 #
 #   libinput quirks validate --data-dir DIR
-#   libinput quirks list --data-dir DIR /dev/input/eventNN
+#   LIBINPUT_QUIRKS_DIR=DIR libinput list-devices
 #
 # Quirks are read when a device is added, so a change only takes effect once the
-# keyboard reconnects or the session restarts.
+# keyboard reconnects or the session restarts. Your compositor also has to enable DWT:
+# niri needs `dwt` in its `input { touchpad { ... } }` block, and omitting it means off.
 #
-# The 2025 stanzas are verified on hardware. The 2024 ids come from the report in
-# upstream issue #8 and have not been tested here.
-
-[ASUS Zenbook Duo USB Keyboard 2024]
-MatchUdevType=keyboard
-MatchBus=usb
-MatchVendor=0x0B05
-MatchProduct=0x1B2C
-AttrKeyboardIntegration=internal
-
-[ASUS Zenbook Duo USB Keyboard 2025]
-MatchUdevType=keyboard
-MatchBus=usb
-MatchVendor=0x0B05
-MatchProduct=0x1BF2
-AttrKeyboardIntegration=internal
-
-[ASUS Zenbook Duo Bluetooth Keyboard 2024]
-MatchUdevType=keyboard
-MatchBus=bluetooth
-MatchVendor=0x0B05
-MatchProduct=0x1B2D
-AttrKeyboardIntegration=internal
-
-[ASUS Zenbook Duo Bluetooth Keyboard 2025]
-MatchUdevType=keyboard
-MatchBus=bluetooth
-MatchVendor=0x0B05
-MatchProduct=0x1BF3
-AttrKeyboardIntegration=internal
+# The 2025 stanza is verified on hardware. The 2024 ids come from the report in upstream
+# issue #8 and are untested here.
+#
+# Docked over the pogo pins is deliberately not covered: it was never established
+# whether DWT needs a quirk in that mode.
 
 [ASUS Zenbook Duo Bluetooth Touchpad Combo 2024]
 MatchUdevType=touchpad

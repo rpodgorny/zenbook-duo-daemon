@@ -22,7 +22,7 @@ AI Generated Wiki: [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://dee
 - ✅ Disable keyboard backlight when idle
 - ✅ Brightness sync between primary and secondary display
 - ✅ Remap keys to run custom commands or key combinations
-- ✅ Palm rejection (libinput disable-while-typing) in both wired and Bluetooth mode, see [libinput quirks](#libinput-quirks)
+- ✅ Palm rejection (libinput disable-while-typing) in Bluetooth mode, see [libinput quirks](#libinput-quirks)
 
 | Keyboard Function               | Wired Mode | Bluetooth Mode | Default Mapping              | Remappable via config file? |
 | ------------------------------- | ---------- | -------------- | ---------------------------- | --------------------------- |
@@ -68,25 +68,30 @@ The install script will:
 
 ## libinput quirks
 
-Palm rejection is libinput's disable-while-typing, and it needs two quirks that libinput
-cannot infer on its own: the keyboard has to be marked internal, and over Bluetooth the
-touchpad also has to be marked as sitting below a keyboard. Marking only the keyboard is
-enough over the pogo pins but does nothing over Bluetooth.
+Palm rejection is libinput's disable-while-typing. Detached, the keyboard and the
+touchpad both enumerate as external Bluetooth devices, and libinput will not pair an
+external touchpad with a keyboard for DWT until the combo layout says the touchpad sits
+below a keyboard. So DWT is unavailable for as long as the keyboard is off the dock.
 
-The stanzas are in `local-overrides.quirks`. Merge them into
-`/etc/libinput/local-overrides.quirks` — that file may already hold unrelated quirks of
-your own, so merge rather than overwrite:
+One stanza fixes it, on the touchpad rather than the keyboard. It is in
+`local-overrides.quirks`. Merge it into `/etc/libinput/local-overrides.quirks` — that
+file may already hold unrelated quirks of your own, so merge rather than overwrite:
 
 ```bash
 sudo mkdir -p /etc/libinput
 sudo cat local-overrides.quirks >> /etc/libinput/local-overrides.quirks
 ```
 
-Then reconnect the keyboard, or restart your session, and check that they apply:
+Then reconnect the keyboard, or restart your session, and check that it took:
 
 ```bash
-libinput quirks list /dev/input/eventNN
+libinput list-devices | grep -A8 Touchpad
 ```
+
+`Disable-w-typing` should read `enabled` rather than `n/a`.
+
+Your compositor also has to turn DWT on. niri, for one, needs `dwt` inside its
+`input { touchpad { ... } }` block, and omitting it means off.
 
 The file itself documents the per-model product ids and how to test a change before
 installing it.
