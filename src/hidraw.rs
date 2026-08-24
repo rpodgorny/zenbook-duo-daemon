@@ -1,4 +1,4 @@
-//! Keyboard backlight and mic mute LED over Bluetooth.
+//! Keyboard backlight, mic mute LED and fn lock over Bluetooth.
 //!
 //! The keyboard accepts the same vendor HID feature reports over Bluetooth as it does
 //! over USB, so the payloads here are the ones `keyboard_usb` already sends. Only the
@@ -75,12 +75,26 @@ fn mic_mute_report(enabled: bool) -> &'static str {
     }
 }
 
+/// `true` means the F1-F12 row sends its media functions and Fn is needed for F1-F12,
+/// which is what ASUS calls Fn-Lock *off*. Same payload `keyboard_usb` sends on attach.
+pub fn fn_lock_report(fn_lock: bool) -> &'static str {
+    if fn_lock {
+        "5ad04e00000000000000000000000000"
+    } else {
+        "5ad04e01000000000000000000000000"
+    }
+}
+
 pub fn send_backlight_state(state: KeyboardBacklightState) {
     send_feature_report(backlight_report(state), "backlight state");
 }
 
 pub fn send_mic_mute_state(enabled: bool) {
     send_feature_report(mic_mute_report(enabled), "mic mute state");
+}
+
+pub fn send_fn_lock_state(fn_lock: bool) {
+    send_feature_report(fn_lock_report(fn_lock), "fn lock state");
 }
 
 #[cfg(test)]
@@ -116,6 +130,13 @@ mod tests {
             let report = parse_hex_string(mic_mute_report(enabled));
             assert_eq!(report.len(), 16);
             assert_eq!(report[..3], [0x5a, 0xd0, 0x7c]);
+            assert_eq!(report[3], expected);
+        }
+
+        for (fn_lock, expected) in [(true, 0), (false, 1)] {
+            let report = parse_hex_string(fn_lock_report(fn_lock));
+            assert_eq!(report.len(), 16);
+            assert_eq!(report[..3], [0x5a, 0xd0, 0x4e]);
             assert_eq!(report[3], expected);
         }
     }
