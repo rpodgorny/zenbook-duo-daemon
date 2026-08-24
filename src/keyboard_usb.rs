@@ -181,11 +181,11 @@ pub async fn start_usb_keyboard_task(
     activity_notifier.notify();
     info!("USB connected");
 
-    // Set the fn key mode. This is not optional over USB the way it is over Bluetooth: a
+    // Set the fn key mode. Over USB this is not optional the way it is over Bluetooth. A
     // keyboard that has just docked has no Fn layer at all until it gets this report, so
-    // the F row sends F1-F12 and holding Fn does nothing. An unset config therefore falls
-    // back to the ASUS factory default rather than leaving the keyboard alone.
-    let fn_lock = config.fn_lock.unwrap_or(true);
+    // the F row sends F1-F12 and holding Fn does nothing. An unset config falls back to
+    // F1-F12 on the row and the media keys behind Fn, which is what ASUS calls Fn Lock on.
+    let fn_lock = config.fn_lock.unwrap_or(false);
     keyboard_device
         .control_out(
             ControlOut {
