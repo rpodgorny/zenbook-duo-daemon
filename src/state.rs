@@ -24,6 +24,9 @@ impl KeyboardBacklightState {
 /// Inner state structure containing all keyboard state
 struct InnerState {
     backlight: KeyboardBacklightState,
+    /// False until something tells us what the keyboard is actually at, so a fresh daemon
+    /// never pushes its placeholder level onto a keyboard the user had turned off.
+    backlight_known: bool,
     mic_mute_led: bool,
 
     /// when suspended, both backlight and mic mute led are disabled
@@ -47,6 +50,7 @@ impl KeyboardStateManager {
         Self {
             state: Arc::new(RwLock::new(InnerState {
                 backlight: KeyboardBacklightState::Low,
+                backlight_known: false,
                 mic_mute_led: false,
                 is_suspended: false,
                 is_idle: false,
@@ -132,6 +136,7 @@ impl KeyboardStateManager {
             return;
         }
         state.backlight = new_state;
+        state.backlight_known = true;
         if !state.is_idle && !state.is_suspended {
             self.sender.send(Event::Backlight(new_state)).ok();
         }
@@ -144,12 +149,20 @@ impl KeyboardStateManager {
         let mut state = self.state.write().unwrap();
         if !state.is_idle && !state.is_suspended {
             state.backlight = level;
+            state.backlight_known = true;
         }
+    }
+
+    /// Whether the stored level came from the keyboard or the user, as opposed to being
+    /// the placeholder this process starts with.
+    pub fn is_backlight_known(&self) -> bool {
+        self.state.read().unwrap().backlight_known
     }
 
     pub fn toggle_keyboard_backlight(&self) {
         let mut state = self.state.write().unwrap();
         state.backlight = state.backlight.next();
+        state.backlight_known = true;
         if !state.is_idle && !state.is_suspended {
             self.sender.send(Event::Backlight(state.backlight)).ok();
         }
@@ -214,6 +227,24 @@ impl KeyboardStateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The flag is what stops a fresh daemon from pushing its placeholder level onto a
+    /// keyboard the user had turned off.
+    #[test]
+    fn the_backlight_level_counts_as_known_only_once_something_sets_it() {
+        let (tx, _rx) = broadcast::channel(16);
+        let state = KeyboardStateManager::new(false, tx);
+        assert!(!state.is_backlight_known());
+
+        state.adopt_keyboard_backlight(KeyboardBacklightState::Off);
+        assert!(state.is_backlight_known());
+        assert_eq!(state.get_keyboard_backlight(), KeyboardBacklightState::Off);
+
+        let (tx, _rx) = broadcast::channel(16);
+        let state = KeyboardStateManager::new(false, tx);
+        state.toggle_keyboard_backlight();
+        assert!(state.is_backlight_known());
+    }
 
     fn drain<F: Fn(&Event) -> bool>(rx: &mut broadcast::Receiver<Event>, want: F) -> usize {
         let mut n = 0;

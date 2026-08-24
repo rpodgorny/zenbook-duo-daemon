@@ -5,7 +5,7 @@ use log::{debug, info, warn};
 use nusb::{
     Device, DeviceId, DeviceInfo,
     hotplug::HotplugEvent,
-    transfer::{ControlOut, ControlType, In, Interrupt, Recipient},
+    transfer::{ControlIn, ControlOut, ControlType, In, Interrupt, Recipient},
 };
 use tokio::sync::{Mutex, broadcast, mpsc};
 
@@ -201,9 +201,16 @@ pub async fn start_usb_keyboard_task(
             .ok();
     }
 
-    // Restore backlight state
-    let backlight_state = state_manager.get_keyboard_backlight();
-    send_backlight_state(&keyboard_device, backlight_state).await;
+    // A keyboard that docks with its battery charged keeps the backlight it had, so ask
+    // before overwriting. Pushing is the fallback for a keyboard that came back from a
+    // real power cycle and forgot, and only once we have a level worth restoring.
+    match read_backlight_state(&keyboard_device).await {
+        Some(level) => state_manager.adopt_keyboard_backlight(level),
+        None if state_manager.is_backlight_known() => {
+            send_backlight_state(&keyboard_device, state_manager.get_keyboard_backlight()).await;
+        }
+        None => debug!("Backlight level unknown on attach, leaving the keyboard alone"),
+    }
 
     // Restore mic mute LED state
     let mic_mute_state = state_manager.get_mic_mute_led();
@@ -213,6 +220,7 @@ pub async fn start_usb_keyboard_task(
 
     // Spawn a task to handle backlight/mic mute events
     let keyboard_device2 = keyboard_device.clone();
+    let state_manager_events = state_manager.clone();
     let mut shutdown_rx2 = shutdown_rx1.resubscribe();
     tokio::spawn(async move {
         loop {
@@ -228,6 +236,15 @@ pub async fn start_usb_keyboard_task(
                         }
                         Ok(Event::MicMuteLed(enabled)) => {
                             send_mute_microphone_state(&keyboard_device2, enabled).await;
+                            // Report 0x5a hands back whatever was written to it last, and
+                            // that read is how a later attach learns the level. Put the
+                            // level back on top; the keyboard is already at it, so nothing
+                            // changes visibly.
+                            send_backlight_state(
+                                &keyboard_device2,
+                                state_manager_events.get_keyboard_backlight(),
+                            )
+                            .await;
                         }
                         Ok(_) => {
                             // dont care about other events
@@ -359,6 +376,27 @@ async fn parse_keyboard_data(
             virtual_keyboard.lock().await.release_all_keys();
         }
     }
+}
+
+/// The wired counterpart of `hidraw::read_backlight_state`: a GET_REPORT for the same
+/// vendor report, with the same caveat that it returns whatever was written there last.
+async fn read_backlight_state(keyboard: &Arc<Device>) -> Option<KeyboardBacklightState> {
+    let reply = keyboard
+        .control_in(
+            ControlIn {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x01,
+                value: 0x035a,
+                index: 4,
+                length: 16,
+            },
+            Duration::from_millis(100),
+        )
+        .await
+        .inspect_err(|e| debug!("Failed to read backlight state: {:?}", e))
+        .ok()?;
+    hidraw::parse_backlight_report(&reply)
 }
 
 async fn send_backlight_state(keyboard: &Arc<Device>, state: KeyboardBacklightState) {

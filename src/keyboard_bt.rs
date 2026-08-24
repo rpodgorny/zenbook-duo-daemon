@@ -151,8 +151,12 @@ pub fn start_bt_keyboard_task(
     // ponytail: one keyboard shows up as several /dev/input event nodes, so this task is
     // started once per node and these reports go out two or three times over. They are
     // idempotent and rare; dedupe or move the writes to a single task if it ever matters.
-    if let Some(level) = hidraw::read_backlight_state() {
-        state_manager.adopt_keyboard_backlight(level);
+    match hidraw::read_backlight_state() {
+        Some(level) => state_manager.adopt_keyboard_backlight(level),
+        None if state_manager.is_backlight_known() => {
+            hidraw::send_backlight_state(state_manager.get_keyboard_backlight());
+        }
+        None => debug!("Backlight level unknown on connect, leaving the keyboard alone"),
     }
     hidraw::send_mic_mute_state(state_manager.get_mic_mute_led());
     if let Some(fn_lock) = config.fn_lock {

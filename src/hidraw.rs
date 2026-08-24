@@ -91,8 +91,9 @@ pub fn read_backlight_state() -> Option<KeyboardBacklightState> {
     parse_backlight_report(&read_feature_report()?)
 }
 
-fn parse_backlight_report(report: &[u8; 16]) -> Option<KeyboardBacklightState> {
-    if report[..4] != [0x5a, 0xba, 0xc5, 0xc4] {
+/// Shared with the wired path, which gets the same reply out of a USB GET_REPORT.
+pub fn parse_backlight_report(report: &[u8]) -> Option<KeyboardBacklightState> {
+    if report.len() < 5 || report[..4] != [0x5a, 0xba, 0xc5, 0xc4] {
         debug!(
             "Report 0x5a holds {:02x?}, not a backlight level",
             &report[..4]
