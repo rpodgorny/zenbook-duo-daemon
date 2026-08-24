@@ -16,6 +16,8 @@ use crate::state::KeyboardBacklightState;
 
 // HIDIOCSFEATURE(len) = _IOC(READ | WRITE, 'H', 0x06, len)
 nix::ioctl_readwrite_buf!(hid_set_feature, b'H', 0x06, u8);
+// HIDIOCGFEATURE(len) = _IOC(READ | WRITE, 'H', 0x07, len)
+nix::ioctl_readwrite_buf!(hid_get_feature, b'H', 0x07, u8);
 
 /// Bluetooth bus, hid-generic keyboard interface, ASUS vendor. The sibling `g0004` node
 /// is the touchpad and ignores these reports. The product id is deliberately not part of
@@ -55,6 +57,57 @@ fn send_feature_report(hex: &str, what: &str) {
     match unsafe { hid_set_feature(file.as_raw_fd(), &mut data) } {
         Ok(_) => debug!("Sent {} over Bluetooth on {}", what, node.display()),
         Err(e) => warn!("Failed to send {} over Bluetooth: {}", what, e),
+    }
+}
+
+/// Reads report 0x5a back. The keyboard has no state registers: this returns whichever
+/// report was last written to 0x5a, so the caller has to check the prefix before trusting
+/// what it finds.
+fn read_feature_report() -> Option<[u8; 16]> {
+    let node = find_bt_hidraw()?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .inspect_err(|e| warn!("Failed to open {} to read: {}", node.display(), e))
+        .ok()?;
+
+    let mut data = [0u8; 16];
+    data[0] = 0x5a;
+    // SAFETY: HIDIOCGFEATURE writes at most data.len() bytes into a buffer we own, and the
+    // length is encoded into the request number by the ioctl_readwrite_buf macro.
+    match unsafe { hid_get_feature(file.as_raw_fd(), &mut data) } {
+        Ok(_) => Some(data),
+        Err(e) => {
+            warn!("Failed to read feature report over Bluetooth: {}", e);
+            None
+        }
+    }
+}
+
+/// The backlight level the keyboard is actually at, or `None` when the last report
+/// written to 0x5a was something else (a mic mute write, say) and the level is unknown.
+pub fn read_backlight_state() -> Option<KeyboardBacklightState> {
+    parse_backlight_report(&read_feature_report()?)
+}
+
+fn parse_backlight_report(report: &[u8; 16]) -> Option<KeyboardBacklightState> {
+    if report[..4] != [0x5a, 0xba, 0xc5, 0xc4] {
+        debug!(
+            "Report 0x5a holds {:02x?}, not a backlight level",
+            &report[..4]
+        );
+        return None;
+    }
+    match report[4] {
+        0 => Some(KeyboardBacklightState::Off),
+        1 => Some(KeyboardBacklightState::Low),
+        2 => Some(KeyboardBacklightState::Medium),
+        3 => Some(KeyboardBacklightState::High),
+        other => {
+            warn!("Unknown backlight level {} in report 0x5a", other);
+            None
+        }
     }
 }
 
@@ -139,5 +192,35 @@ mod tests {
             assert_eq!(report[..3], [0x5a, 0xd0, 0x4e]);
             assert_eq!(report[3], expected);
         }
+    }
+
+    fn report(hex: &str) -> [u8; 16] {
+        parse_hex_string(hex).try_into().unwrap()
+    }
+
+    /// Bytes captured off a real keyboard: report 0x5a hands back the last report written
+    /// to it, which is a backlight level only some of the time.
+    #[test]
+    fn a_read_back_report_is_only_trusted_when_it_is_a_backlight_one() {
+        let levels = [
+            (KeyboardBacklightState::Off, "5abac5c400"),
+            (KeyboardBacklightState::Low, "5abac5c401"),
+            (KeyboardBacklightState::Medium, "5abac5c402"),
+            (KeyboardBacklightState::High, "5abac5c403"),
+        ];
+        for (state, prefix) in levels {
+            let hex = format!("{prefix}{}", "0".repeat(32 - prefix.len()));
+            assert_eq!(parse_backlight_report(&report(&hex)), Some(state));
+        }
+
+        // A mic mute report, and an unknown level, are both "level unknown".
+        assert_eq!(
+            parse_backlight_report(&report("5ad07c00000000000000000000000000")),
+            None
+        );
+        assert_eq!(
+            parse_backlight_report(&report("5abac5c409000000000000000000000000"[..32].into())),
+            None
+        );
     }
 }

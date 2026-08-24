@@ -145,12 +145,15 @@ pub fn start_bt_keyboard_task(
     info!("Bluetooth connected on {}", path.display());
     activity_notifier.notify();
 
-    // The keyboard comes back with whatever its firmware last had, so push the state we
-    // think it should be in.
+    // The keyboard keeps its backlight across a daemon restart, so read the level back
+    // instead of pushing one: nothing here should change what the user last set. The mic
+    // mute LED is different, it tracks the mute state this process just resolved.
     // ponytail: one keyboard shows up as several /dev/input event nodes, so this task is
     // started once per node and these reports go out two or three times over. They are
     // idempotent and rare; dedupe or move the writes to a single task if it ever matters.
-    hidraw::send_backlight_state(state_manager.get_keyboard_backlight());
+    if let Some(level) = hidraw::read_backlight_state() {
+        state_manager.adopt_keyboard_backlight(level);
+    }
     hidraw::send_mic_mute_state(state_manager.get_mic_mute_led());
     if let Some(fn_lock) = config.fn_lock {
         hidraw::send_fn_lock_state(fn_lock);
@@ -160,6 +163,7 @@ pub fn start_bt_keyboard_task(
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
     // Spawn a task to handle backlight events
+    let state_manager_events = state_manager.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -174,6 +178,11 @@ pub fn start_bt_keyboard_task(
                         }
                         Ok(Event::MicMuteLed(enabled)) => {
                             hidraw::send_mic_mute_state(enabled);
+                            // Report 0x5a reads back whatever was written to it last, and
+                            // that read is how the next daemon start learns the backlight
+                            // level. Put the level back on top; it is the value the
+                            // keyboard already has, so nothing changes visibly.
+                            hidraw::send_backlight_state(state_manager_events.get_keyboard_backlight());
                         }
                         Ok(_) => {
                             // dont care about other events
@@ -240,6 +249,13 @@ async fn parse_keyboard_event(
             }
             199 => {
                 debug!("Backlight key pressed");
+                // Cycle from where the keyboard actually is. After a restart our idea of
+                // the level is a guess, and the read only answers when the last report
+                // written was a backlight one, so this is a resync when it is available
+                // and a no-op when it is not.
+                if let Some(level) = hidraw::read_backlight_state() {
+                    state_manager.adopt_keyboard_backlight(level);
+                }
                 config
                     .keyboard_backlight_key
                     .execute(&virtual_keyboard, &state_manager)
