@@ -181,25 +181,26 @@ pub async fn start_usb_keyboard_task(
     activity_notifier.notify();
     info!("USB connected");
 
-    // Set the fn key mode. Unset in the config means don't touch it, so whatever the BIOS
-    // Fn Lock setting put there stays.
-    if let Some(fn_lock) = config.fn_lock {
-        keyboard_device
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: 0x035a,
-                    index: 4,
-                    data: &parse_hex_string(hidraw::fn_lock_report(fn_lock)),
-                },
-                Duration::from_millis(100),
-            )
-            .await
-            .inspect_err(|e| warn!("Failed to set fn lock: {}", e))
-            .ok();
-    }
+    // Set the fn key mode. This is not optional over USB the way it is over Bluetooth: a
+    // keyboard that has just docked has no Fn layer at all until it gets this report, so
+    // the F row sends F1-F12 and holding Fn does nothing. An unset config therefore falls
+    // back to the ASUS factory default rather than leaving the keyboard alone.
+    let fn_lock = config.fn_lock.unwrap_or(true);
+    keyboard_device
+        .control_out(
+            ControlOut {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x09,
+                value: 0x035a,
+                index: 4,
+                data: &parse_hex_string(hidraw::fn_lock_report(fn_lock)),
+            },
+            Duration::from_millis(100),
+        )
+        .await
+        .inspect_err(|e| warn!("Failed to set fn lock: {}", e))
+        .ok();
 
     // A keyboard that docks with its battery charged keeps the backlight it had, so ask
     // before overwriting. Pushing is the fallback for a keyboard that came back from a
