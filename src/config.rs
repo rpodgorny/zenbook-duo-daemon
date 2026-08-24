@@ -56,7 +56,7 @@ pub struct Config {
     /// `Some(true)`: F1-F12 row sends media keys, Fn + F1-F12 gives F1-F12 (what ASUS
     /// calls Fn Lock *off*). `Some(false)`: the row sends F1-F12 directly, Fn gives the
     /// media keys. `None`: leave a Bluetooth keyboard at whatever it already had. A wired
-    /// keyboard still gets `true`, because it comes up with no Fn layer until it is told.
+    /// keyboard gets `false`, because it comes up with no Fn layer until it is told.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fn_lock: Option<bool>,
     pub keyboard_backlight_key: KeyFunction,
@@ -149,7 +149,7 @@ impl Config {
 # fn_lock = true             # true: F1-F12 row sends media keys, Fn + F1-F12 gives F1-F12 (ASUS calls this Fn Lock off)
 # #                          # false: the row sends F1-F12 directly, Fn + F1-F12 gives the media keys
 # #                          # Unset (the default): a bluetooth keyboard keeps whatever mode it is already in.
-# #                          # A wired one is set to true regardless: docking leaves it with no Fn layer at
+# #                          # A wired one is set to false regardless. Docking leaves it with no Fn layer at
 # #                          # all until the daemon tells it which mode to be in, so there is nothing to keep.
 # idle_timeout_seconds = 300 # 5 minutes, set to 0 to disable idle detection
         ".trim();
