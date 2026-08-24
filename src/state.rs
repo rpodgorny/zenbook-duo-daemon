@@ -1,6 +1,11 @@
 use crate::events::Event;
+use log::warn;
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast;
+
+/// The backlight level outlives the daemon: on connect we push our idea of it to the
+/// keyboard, so without this a restart would light up a keyboard the user had turned off.
+const BACKLIGHT_PATH: &str = "/var/lib/zenbook-duo-daemon/backlight";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyboardBacklightState {
@@ -11,6 +16,50 @@ pub enum KeyboardBacklightState {
 }
 
 impl KeyboardBacklightState {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    /// Falls back to `Low` for a missing or unreadable file, which is what the daemon
+    /// used to start with unconditionally.
+    fn load() -> Self {
+        std::fs::read_to_string(BACKLIGHT_PATH)
+            .ok()
+            .and_then(|s| Self::parse(s.trim()))
+            .unwrap_or(Self::Low)
+    }
+
+    /// ponytail: plain blocking write on every level change, a few bytes a keypress. A
+    /// half written file just reads back as `Low` next boot; make it write-rename if that
+    /// ever bites.
+    fn save(&self) {
+        let path = std::path::Path::new(BACKLIGHT_PATH);
+        if let Some(dir) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(dir)
+        {
+            warn!("Failed to create {}: {}", dir.display(), e);
+            return;
+        }
+        if let Err(e) = std::fs::write(path, self.as_str()) {
+            warn!("Failed to save backlight state: {}", e);
+        }
+    }
+
     pub fn next(&self) -> Self {
         match self {
             Self::Off => Self::Low,
@@ -46,7 +95,7 @@ impl KeyboardStateManager {
     pub fn new(is_usb_attached: bool, sender: broadcast::Sender<Event>) -> Self {
         Self {
             state: Arc::new(RwLock::new(InnerState {
-                backlight: KeyboardBacklightState::Low,
+                backlight: KeyboardBacklightState::load(),
                 mic_mute_led: false,
                 is_suspended: false,
                 is_idle: false,
@@ -132,6 +181,7 @@ impl KeyboardStateManager {
             return;
         }
         state.backlight = new_state;
+        new_state.save();
         if !state.is_idle && !state.is_suspended {
             self.sender.send(Event::Backlight(new_state)).ok();
         }
@@ -140,6 +190,7 @@ impl KeyboardStateManager {
     pub fn toggle_keyboard_backlight(&self) {
         let mut state = self.state.write().unwrap();
         state.backlight = state.backlight.next();
+        state.backlight.save();
         if !state.is_idle && !state.is_suspended {
             self.sender.send(Event::Backlight(state.backlight)).ok();
         }
@@ -204,6 +255,21 @@ impl KeyboardStateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two halves are hand written match arms, so a renamed level would silently
+    /// start reading back as Low.
+    #[test]
+    fn every_backlight_level_survives_a_save_load_round_trip() {
+        for state in [
+            KeyboardBacklightState::Off,
+            KeyboardBacklightState::Low,
+            KeyboardBacklightState::Medium,
+            KeyboardBacklightState::High,
+        ] {
+            assert_eq!(KeyboardBacklightState::parse(state.as_str()), Some(state));
+        }
+        assert_eq!(KeyboardBacklightState::parse("nonsense"), None);
+    }
 
     fn drain<F: Fn(&Event) -> bool>(rx: &mut broadcast::Receiver<Event>, want: F) -> usize {
         let mut n = 0;
