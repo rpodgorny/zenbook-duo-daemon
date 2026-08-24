@@ -10,8 +10,9 @@ use nusb::{
 use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::{
-    KeyboardBacklightState, config::Config, events::Event, idle_detection::ActivityNotifier,
-    parse_hex_string, state::KeyboardStateManager, virtual_keyboard::VirtualKeyboard,
+    KeyboardBacklightState, config::Config, events::Event, hidraw,
+    idle_detection::ActivityNotifier, parse_hex_string, state::KeyboardStateManager,
+    virtual_keyboard::VirtualKeyboard,
 };
 
 /// Why a wired keyboard task is being shut down.
@@ -180,26 +181,25 @@ pub async fn start_usb_keyboard_task(
     activity_notifier.notify();
     info!("USB connected");
 
-    // enable fn keys
-    keyboard_device
-        .control_out(
-            ControlOut {
-                control_type: ControlType::Class,
-                recipient: Recipient::Interface,
-                request: 0x09,
-                value: 0x035a,
-                index: 4,
-                data: &if config.fn_lock {
-                    parse_hex_string("5ad04e00000000000000000000000000")
-                } else {
-                    parse_hex_string("5ad04e01000000000000000000000000")
+    // Set the fn key mode. Unset in the config means don't touch it, so whatever the BIOS
+    // Fn Lock setting put there stays.
+    if let Some(fn_lock) = config.fn_lock {
+        keyboard_device
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Class,
+                    recipient: Recipient::Interface,
+                    request: 0x09,
+                    value: 0x035a,
+                    index: 4,
+                    data: &parse_hex_string(hidraw::fn_lock_report(fn_lock)),
                 },
-            },
-            Duration::from_millis(100),
-        )
-        .await
-        .inspect_err(|e| warn!("Failed to enable fn keys: {}", e))
-        .ok();
+                Duration::from_millis(100),
+            )
+            .await
+            .inspect_err(|e| warn!("Failed to set fn lock: {}", e))
+            .ok();
+    }
 
     // Restore backlight state
     let backlight_state = state_manager.get_keyboard_backlight();

@@ -152,6 +152,9 @@ pub fn start_bt_keyboard_task(
     // idempotent and rare; dedupe or move the writes to a single task if it ever matters.
     hidraw::send_backlight_state(state_manager.get_keyboard_backlight());
     hidraw::send_mic_mute_state(state_manager.get_mic_mute_led());
+    if let Some(fn_lock) = config.fn_lock {
+        hidraw::send_fn_lock_state(fn_lock);
+    }
 
     // Create a cancellation token for the control task
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();

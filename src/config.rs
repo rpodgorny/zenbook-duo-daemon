@@ -53,7 +53,11 @@ impl KeyFunction {
 pub struct Config {
     usb_vendor_id: String,
     usb_product_id: String,
-    pub fn_lock: bool,
+    /// `Some(true)`: F1-F12 row sends media keys, Fn + F1-F12 gives F1-F12 (what ASUS
+    /// calls Fn Lock *off*). `Some(false)`: the row sends F1-F12 directly. `None`: leave
+    /// the keyboard alone so the BIOS Fn Lock setting survives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fn_lock: Option<bool>,
     pub keyboard_backlight_key: KeyFunction,
     pub brightness_down_key: KeyFunction,
     pub brightness_up_key: KeyFunction,
@@ -105,7 +109,7 @@ impl Default for Config {
         Self {
             usb_vendor_id: "0b05".to_string(),
             usb_product_id: get_usb_product_id(),
-            fn_lock: true,
+            fn_lock: None,
             keyboard_backlight_key: KeyFunction::KeyboardBacklight(true),
             brightness_down_key: KeyFunction::KeyBind(vec![EV_KEY::KEY_BRIGHTNESSDOWN]),
             brightness_up_key: KeyFunction::KeyBind(vec![EV_KEY::KEY_BRIGHTNESSUP]),
@@ -141,7 +145,9 @@ impl Config {
 # ToggleSecondaryDisplay = true             # Toggles the secondary display
 # NoOp = true                               # Does nothing when the physical key is pressed
 #
-# fn_lock = true             # To input F1-F12, you need to press Fn + F1-F12
+# fn_lock = true             # true: F1-F12 row sends media keys, Fn + F1-F12 gives F1-F12 (ASUS calls this Fn Lock off)
+# #                          # false: the row sends F1-F12 directly.
+# #                          # Unset (the default): the keyboard is left alone and the BIOS Fn Lock setting stands.
 # idle_timeout_seconds = 300 # 5 minutes, set to 0 to disable idle detection
         ".trim();
         let config_str = format!("{}\n\n\n{}", help, config_str);
@@ -173,5 +179,30 @@ impl Config {
         info!("Loading config from: {}", config_path.display());
         let config_str = fs::read_to_string(config_path).await.unwrap();
         toml::from_str(&config_str).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `write_default_config` unwraps the serialization, and a `None` the toml crate
+    /// refuses to write would panic there instead of at compile time.
+    #[test]
+    fn an_unset_fn_lock_round_trips_through_toml() {
+        let written = toml::to_string(&Config::default()).unwrap();
+        assert!(
+            !written.contains("fn_lock"),
+            "unset fn_lock was written out"
+        );
+        assert_eq!(toml::from_str::<Config>(&written).unwrap().fn_lock, None);
+
+        for (line, expected) in [
+            ("fn_lock = true", Some(true)),
+            ("fn_lock = false", Some(false)),
+        ] {
+            let config: Config = toml::from_str(line).unwrap();
+            assert_eq!(config.fn_lock, expected, "{line} parsed wrong");
+        }
     }
 }
