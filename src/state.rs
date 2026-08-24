@@ -137,6 +137,16 @@ impl KeyboardStateManager {
         }
     }
 
+    /// Records the level the keyboard reports it is already at, without echoing it back
+    /// as an event. Used to resync after a daemon restart, where the keyboard kept its
+    /// backlight but this process starts out assuming a default.
+    pub fn adopt_keyboard_backlight(&self, level: KeyboardBacklightState) {
+        let mut state = self.state.write().unwrap();
+        if !state.is_idle && !state.is_suspended {
+            state.backlight = level;
+        }
+    }
+
     pub fn toggle_keyboard_backlight(&self) {
         let mut state = self.state.write().unwrap();
         state.backlight = state.backlight.next();
